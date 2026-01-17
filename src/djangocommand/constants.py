@@ -5,20 +5,104 @@ This module contains only pure Python constants with NO Django imports,
 making it safe to import in Django settings.py files.
 """
 
-# Commands that are disallowed by default.
-# Users can override via DJANGOCOMMAND_DISALLOWED_COMMANDS in settings.py
+# =============================================================================
+# DEFAULT ALLOWED COMMANDS (security-first approach)
+# =============================================================================
+# By default, DjangoCommand uses an allowlist approach - only commands in this
+# list can be executed remotely. This is the most secure default.
 #
 # To extend this list in your settings.py:
+#   from djangocommand import DEFAULT_ALLOWED_COMMANDS
+#   DJANGOCOMMAND_ALLOWED_COMMANDS = DEFAULT_ALLOWED_COMMANDS + (
+#       'my_custom_command',
+#   )
+#
+# To restrict to specific commands:
+#   DJANGOCOMMAND_ALLOWED_COMMANDS = (
+#       'migrate',
+#       'collectstatic',
+#   )
+
+DEFAULT_ALLOWED_COMMANDS = (
+    # === Core Django - Database ===
+    'migrate',              # Apply database migrations
+    'showmigrations',       # List migrations and their status
+    'dbbackup',             # django-dbbackup: backup database
+    'dbrestore',            # django-dbbackup: restore database
+    'createcachetable',     # Create cache table for database cache backend
+
+    # === Core Django - Static Files ===
+    'collectstatic',        # Collect static files to STATIC_ROOT
+    'findstatic',           # Find location of static files
+
+    # === Core Django - Maintenance ===
+    'clearsessions',        # Clear expired sessions
+    'check',                # Run Django system checks
+    'diffsettings',         # Display differences between current and default settings
+    'inspectdb',            # Introspect database tables (read-only)
+    'sendtestemail',        # Send a test email
+    'showmigrations',       # Show all migrations
+    'sqlmigrate',           # Display SQL for a migration (read-only)
+    'sqlsequencereset',     # Output SQL to reset sequences
+
+    # === Core Django - Data ===
+    'dumpdata',             # Export data to JSON/XML
+    'loaddata',             # Load data from fixtures
+
+    # === Core Django - Internationalization ===
+    'compilemessages',      # Compile .po files to .mo files
+
+    # === Testing ===
+    'test',                 # Run Django tests
+
+    # === django-extensions (popular third-party) ===
+    'show_urls',            # Display all URL routes
+    'validate_templates',   # Validate Django templates
+    'print_settings',       # Print Django settings (filtered)
+    'list_signals',         # List all signals
+    'notes',                # Show all TODO/FIXME/etc in code
+    'show_template_tags',   # List all template tags
+    'graph_models',         # Generate model graph (read-only output)
+    'pipchecker',           # Check pip packages for updates
+    'clear_cache',          # Clear Django cache
+
+    # === django-celery-beat ===
+    # (no safe commands - beat management should be done via admin)
+
+    # === django-health-check ===
+    'health_check',         # Run health checks
+
+    # === django-silk (profiling) ===
+    'silk_clear_request_log',  # Clear profiling data
+
+    # === django-redis ===
+    # (no management commands)
+
+    # === wagtail (popular CMS) ===
+    'fixtree',              # Fix Wagtail page tree
+    'publish_scheduled',    # Publish scheduled pages
+    'rebuild_references_index',  # Rebuild reference index
+    'search_garbage_collect',    # Clean up search index
+    'update_index',         # Update search index
+
+    # === django-haystack (search) ===
+    'rebuild_index',        # Rebuild search index
+    'update_index',         # Update search index
+    'clear_index',          # Clear search index
+)
+
+
+# =============================================================================
+# DEFAULT DISALLOWED COMMANDS (blocklist approach - optional)
+# =============================================================================
+# If you prefer a blocklist approach (allow all except dangerous commands),
+# set DJANGOCOMMAND_USE_BLOCKLIST = True in your settings and optionally
+# customize DJANGOCOMMAND_DISALLOWED_COMMANDS.
+#
+# To extend the blocklist in your settings.py:
 #   from djangocommand import DEFAULT_DISALLOWED_COMMANDS
 #   DJANGOCOMMAND_DISALLOWED_COMMANDS = DEFAULT_DISALLOWED_COMMANDS + (
 #       'my_dangerous_command',
-#   )
-#
-# To allow a blocked command, define your own tuple without it:
-#   DJANGOCOMMAND_DISALLOWED_COMMANDS = (
-#       'flush',
-#       'shell',
-#       # ... your custom list
 #   )
 
 DEFAULT_DISALLOWED_COMMANDS = (
@@ -32,7 +116,7 @@ DEFAULT_DISALLOWED_COMMANDS = (
     'shell_plus',           # django-extensions: enhanced shell
     'dbshell',              # Database CLI client
 
-    # === Development servers (would block agent, wrong context) ===
+    # === Development servers (would block runner, wrong context) ===
     'runserver',
     'runserver_plus',       # django-extensions
     'testserver',
@@ -41,7 +125,7 @@ DEFAULT_DISALLOWED_COMMANDS = (
     'createsuperuser',      # Can create admin with --noinput + env vars
     'changepassword',       # Modify user credentials
 
-    # === File system modifications (agent shouldn't write code) ===
+    # === File system modifications (runner shouldn't write code) ===
     'makemigrations',       # Creates migration files
     'squashmigrations',     # Modifies migration files
 

@@ -1,7 +1,7 @@
 """
-DjangoCommand Agent core.
+DjangoCommand Runner core.
 
-The agent maintains a heartbeat with the server, syncs commands,
+The runner maintains a heartbeat with the server, syncs commands,
 and executes pending commands with output streaming.
 """
 
@@ -18,10 +18,15 @@ from typing import Optional
 import django
 
 from .client import DjangoCommandClient, DjangoCommandClientError
-from .config import AgentConfig, load_config
+from .config import RunnerConfig, load_config
 from .discovery import get_commands_with_hash
 from .executor import CommandExecutor, ExecutionResult
-from .security import get_disallowed_commands, is_command_allowed
+from .security import (
+    get_allowed_commands,
+    get_disallowed_commands,
+    is_command_allowed,
+    is_using_blocklist,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +37,9 @@ except ImportError:
     __version__ = 'unknown'
 
 
-class Agent:
+class Runner:
     """
-    DjangoCommand agent that maintains connection with server.
+    DjangoCommand runner that maintains connection with server.
 
     Responsibilities:
     - Heartbeat every N seconds
@@ -50,7 +55,7 @@ class Agent:
     MAX_CONCURRENT_EXECUTIONS = 4
     EXECUTION_POLL_INTERVAL = 2.0  # seconds
 
-    def __init__(self, config: AgentConfig):
+    def __init__(self, config: RunnerConfig):
         self.config = config
         self.client = DjangoCommandClient(
             server_url=config.server_url,
@@ -66,7 +71,7 @@ class Agent:
         self._commands_hash: str = ''
 
         # Version info
-        self._agent_version = __version__
+        self._runner_version = __version__
         self._python_version = platform.python_version()
         self._django_version = django.get_version()
 
@@ -79,8 +84,8 @@ class Agent:
         self._project_path = self._find_project_path()
 
     @classmethod
-    def from_settings(cls) -> 'Agent':
-        """Create agent from Django settings."""
+    def from_settings(cls) -> 'Runner':
+        """Create runner from Django settings."""
         config = load_config()
         return cls(config)
 
@@ -101,22 +106,44 @@ class Agent:
     def discover_commands(self):
         """Discover local management commands and compute hash.
 
-        Excludes:
-        - Agent's own command (djangocommand)
-        - Commands in DJANGOCOMMAND_DISALLOWED_COMMANDS blocklist
-        """
-        # Combine agent exclusions with security blocklist
-        disallowed = get_disallowed_commands()
-        exclude = list(set(self.EXCLUDED_COMMANDS) | disallowed)
+        Uses security mode from settings:
+        - Allowlist mode (default): Only include commands in
+          DJANGOCOMMAND_ALLOWED_COMMANDS
+        - Blocklist mode: Include all commands except those in
+          DJANGOCOMMAND_DISALLOWED_COMMANDS
 
-        self._commands, self._commands_hash = get_commands_with_hash(
-            exclude=exclude
-        )
-        logger.info(
-            f'Discovered {len(self._commands)} commands (hash: {self._commands_hash[:20]}...)'
-        )
-        if disallowed:
-            logger.debug(f'Excluded {len(disallowed)} disallowed commands from discovery')
+        Always excludes:
+        - Runner's own command (djangocommand)
+        """
+        if is_using_blocklist():
+            # Blocklist mode: exclude disallowed commands
+            disallowed = get_disallowed_commands()
+            exclude = list(set(self.EXCLUDED_COMMANDS) | disallowed)
+
+            self._commands, self._commands_hash = get_commands_with_hash(
+                exclude=exclude
+            )
+            logger.info(
+                f'Discovered {len(self._commands)} commands (hash: {self._commands_hash[:20]}...)'
+            )
+            logger.debug(
+                f'Using blocklist mode: excluded {len(disallowed)} disallowed commands'
+            )
+        else:
+            # Allowlist mode (default): only include allowed commands
+            allowed = get_allowed_commands()
+            # Remove runner's own command from allowlist to avoid recursion
+            allowed_filtered = allowed - set(self.EXCLUDED_COMMANDS)
+
+            self._commands, self._commands_hash = get_commands_with_hash(
+                include=list(allowed_filtered)
+            )
+            logger.info(
+                f'Discovered {len(self._commands)} commands (hash: {self._commands_hash[:20]}...)'
+            )
+            logger.debug(
+                f'Using allowlist mode: {len(allowed)} commands in allowlist'
+            )
 
     def sync_commands(self):
         """Sync commands with server."""
@@ -149,7 +176,7 @@ class Agent:
         """
         try:
             response = self.client.heartbeat(
-                agent_version=self._agent_version,
+                runner_version=self._runner_version,
                 python_version=self._python_version,
                 django_version=self._django_version,
                 commands_hash=self._commands_hash,
@@ -300,14 +327,25 @@ class Agent:
             return
 
         # Send rejection message as output
-        error_message = (
-            f"Command '{command}' rejected by agent security policy.\n"
-            f"Reason: {reason}\n"
-            f"\n"
-            f"To allow this command, update your Django settings:\n"
-            f"  DJANGOCOMMAND_ALLOWED_COMMANDS = ('{command}', ...)\n"
-            f"or remove it from DJANGOCOMMAND_DISALLOWED_COMMANDS.\n"
-        )
+        if is_using_blocklist():
+            error_message = (
+                f"Command '{command}' rejected by runner security policy.\n"
+                f"Reason: {reason}\n"
+                f"\n"
+                f"To allow this command, remove it from DJANGOCOMMAND_DISALLOWED_COMMANDS\n"
+                f"in your Django settings.\n"
+            )
+        else:
+            error_message = (
+                f"Command '{command}' rejected by runner security policy.\n"
+                f"Reason: {reason}\n"
+                f"\n"
+                f"To allow this command, add it to DJANGOCOMMAND_ALLOWED_COMMANDS\n"
+                f"in your Django settings:\n"
+                f"\n"
+                f"  from djangocommand import DEFAULT_ALLOWED_COMMANDS\n"
+                f"  DJANGOCOMMAND_ALLOWED_COMMANDS = DEFAULT_ALLOWED_COMMANDS + ('{command}',)\n"
+            )
         try:
             self.client.send_output(
                 execution_id=execution_id,
@@ -372,7 +410,7 @@ class Agent:
 
     def run(self):
         """
-        Main agent loop.
+        Main runner loop.
 
         Runs heartbeat and execution polling until stopped.
         """
@@ -380,7 +418,7 @@ class Agent:
         self._running = True
 
         logger.info(
-            f'Starting DjangoCommand agent v{self._agent_version}\n'
+            f'Starting DjangoCommand runner v{self._runner_version}\n'
             f'  Server: {self.config.server_url}\n'
             f'  Heartbeat interval: {self.config.heartbeat_interval}s\n'
             f'  Execution poll interval: {self.EXECUTION_POLL_INTERVAL}s\n'
@@ -443,7 +481,7 @@ class Agent:
                 self._executor_pool.shutdown(wait=True, cancel_futures=False)
                 self._executor_pool = None
 
-        logger.info('Agent stopped')
+        logger.info('Runner stopped')
 
     def run_once(self) -> bool:
         """

@@ -41,12 +41,19 @@ def _get_command_help(command_instance, name: str) -> str:
         return getattr(command_instance, 'help', '') or ''
 
 
-def discover_commands(exclude: list[str] = None) -> list[dict]:
+def discover_commands(
+    exclude: list[str] = None,
+    include: list[str] = None,
+) -> list[dict]:
     """
     Discover all management commands in the Django project.
 
     Args:
-        exclude: List of command names to exclude (e.g., ['djangocommand', 'runserver'])
+        exclude: List of command names to exclude (blocklist mode).
+            Commands in this list will be skipped.
+        include: List of command names to include (allowlist mode).
+            If provided, ONLY commands in this list will be returned.
+            Takes precedence over exclude.
 
     Returns:
         List of command dicts with name, app_label, help_text
@@ -54,12 +61,18 @@ def discover_commands(exclude: list[str] = None) -> list[dict]:
     # Clear cache to discover newly added commands
     _clear_commands_cache()
 
-    exclude = set(exclude or [])
+    exclude_set = set(exclude or [])
+    include_set = set(include) if include else None
     commands = []
 
     # get_commands() returns {command_name: app_label_or_module}
     for name, app in get_commands().items():
-        if name in exclude:
+        # Allowlist mode: only include if in include_set
+        if include_set is not None:
+            if name not in include_set:
+                continue
+        # Blocklist mode: skip if in exclude_set
+        elif name in exclude_set:
             continue
 
         try:
@@ -116,18 +129,23 @@ def compute_commands_hash(commands: list[dict]) -> str:
     return f'sha256:{hash_value}'
 
 
-def get_commands_with_hash(exclude: list[str] = None) -> tuple[list[dict], str]:
+def get_commands_with_hash(
+    exclude: list[str] = None,
+    include: list[str] = None,
+) -> tuple[list[dict], str]:
     """
     Discover commands and compute their hash.
 
     Convenience function that returns both commands and hash.
 
     Args:
-        exclude: List of command names to exclude
+        exclude: List of command names to exclude (blocklist mode)
+        include: List of command names to include (allowlist mode).
+            If provided, takes precedence over exclude.
 
     Returns:
         Tuple of (commands_list, commands_hash)
     """
-    commands = discover_commands(exclude=exclude)
+    commands = discover_commands(exclude=exclude, include=include)
     commands_hash = compute_commands_hash(commands)
     return commands, commands_hash

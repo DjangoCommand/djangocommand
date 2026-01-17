@@ -1,5 +1,5 @@
 """
-Daemon utilities for the DjangoCommand agent.
+Daemon utilities for the DjangoCommand runner.
 
 Provides:
 - Pidfile: PID file management with stale detection
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Log rotation settings
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB
-LOG_BACKUP_COUNT = 2  # Keep 2 backup files (agent.log.1, agent.log.2)
+LOG_BACKUP_COUNT = 2  # Keep 2 backup files (runner.log.1, runner.log.2)
 
 
 def get_state_dir(base_dir: str) -> Path:
@@ -257,7 +257,7 @@ class DaemonContext:
 
 class ProcessController:
     """
-    High-level process control for the agent.
+    High-level process control for the runner.
 
     Provides start/stop/restart/status operations using
     PID file for process tracking.
@@ -268,12 +268,12 @@ class ProcessController:
 
     def __init__(self, state_dir: Path):
         self.state_dir = Path(state_dir)
-        self.pidfile = Pidfile(self.state_dir / "agent.pid")
-        self.logfile = self.state_dir / "agent.log"
+        self.pidfile = Pidfile(self.state_dir / "runner.pid")
+        self.logfile = self.state_dir / "runner.log"
 
     def get_status(self) -> dict:
         """
-        Get current agent status.
+        Get current runner status.
 
         Returns dict with:
         - status: "running" | "stopped"
@@ -294,18 +294,18 @@ class ProcessController:
         }
 
     def is_running(self) -> bool:
-        """Check if agent is currently running."""
+        """Check if runner is currently running."""
         return self.get_status()["status"] == "running"
 
     def stop(self, force: bool = False) -> bool:
         """
-        Stop the running agent.
+        Stop the running runner.
 
         Args:
             force: If True, use SIGKILL. Otherwise SIGTERM with timeout.
 
         Returns:
-            True if agent was stopped (or wasn't running).
+            True if runner was stopped (or wasn't running).
             False if graceful stop timed out.
         """
         data = self.pidfile.read()

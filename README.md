@@ -25,13 +25,13 @@ INSTALLED_APPS = [
 DJANGOCOMMAND_API_KEY = "dc_your_api_key_here"
 ```
 
-3. Start the agent:
+3. Start the runner:
 
 ```bash
 python manage.py djangocommand start
 ```
 
-The agent will connect to DjangoCommand, sync your available commands, and start polling for executions.
+The runner will connect to DjangoCommand, sync your available commands, and start polling for executions.
 
 ## Configuration
 
@@ -48,7 +48,7 @@ DJANGOCOMMAND_API_KEY = "dc_..."
 # Server URL (default: https://app.djangocommand.com)
 DJANGOCOMMAND_SERVER_URL = "https://app.djangocommand.com"
 
-# Agent heartbeat interval in seconds (default: 30, minimum: 5)
+# Runner heartbeat interval in seconds (default: 30, minimum: 5)
 DJANGOCOMMAND_HEARTBEAT_INTERVAL = 30
 
 # HTTP request timeout in seconds (default: 30)
@@ -63,68 +63,45 @@ DJANGOCOMMAND_ALLOW_HTTP_HOSTS = ['localhost', '127.0.0.1', '::1']
 
 ## Command Security
 
-The agent includes a security layer that controls which commands can be executed remotely. This protects against accidental or malicious execution of dangerous commands.
+The runner includes a security layer that controls which commands can be executed remotely. This protects against accidental or malicious execution of dangerous commands.
 
-### Default Blocklist
+### Default: Allowlist Mode (Recommended)
 
-By default, these commands are blocked:
+By default, DjangoCommand uses an **allowlist approach** - only commands explicitly listed can be executed remotely. This is the most secure configuration.
+
+The default allowlist includes common, safe Django commands:
 
 | Category | Commands |
 |----------|----------|
-| Database destruction | `flush`, `sqlflush`, `reset_db` |
-| Interactive shells | `shell`, `shell_plus`, `dbshell` |
-| Development servers | `runserver`, `runserver_plus`, `testserver` |
-| Security sensitive | `createsuperuser`, `changepassword` |
-| File modifications | `makemigrations`, `squashmigrations` |
-| Other dangerous | `drop_test_database`, `delete_squashed_migrations`, `clean_pyc` |
+| Database | `migrate`, `showmigrations`, `dbbackup`, `dbrestore`, `createcachetable` |
+| Static files | `collectstatic`, `findstatic` |
+| Maintenance | `clearsessions`, `check`, `sendtestemail`, `diffsettings` |
+| Data | `dumpdata`, `loaddata`, `inspectdb` |
+| Testing | `test` |
+| django-extensions | `show_urls`, `validate_templates`, `print_settings`, `clear_cache` |
+| Wagtail | `fixtree`, `publish_scheduled`, `update_index` |
+| And more... | See `DEFAULT_ALLOWED_COMMANDS` for the full list |
 
-Blocked commands are:
+Commands not in the allowlist are:
 - **Not synced** to the server (won't appear in the UI)
 - **Rejected at runtime** with an error message (defense in depth)
 
-### Extending the Blocklist
+### Adding Commands to the Allowlist
 
-Add more commands to the default blocklist:
+To allow additional commands, extend the default allowlist:
 
 ```python
-from djangocommand import DEFAULT_DISALLOWED_COMMANDS
+from djangocommand import DEFAULT_ALLOWED_COMMANDS
 
-DJANGOCOMMAND_DISALLOWED_COMMANDS = DEFAULT_DISALLOWED_COMMANDS + (
-    'my_dangerous_command',
-    'another_risky_command',
+DJANGOCOMMAND_ALLOWED_COMMANDS = DEFAULT_ALLOWED_COMMANDS + (
+    'my_custom_command',
+    'another_safe_command',
 )
 ```
 
-### Removing Commands from the Blocklist
+### Using a Custom Allowlist
 
-Use list comprehension to remove specific commands while keeping future updates:
-
-```python
-from djangocommand import DEFAULT_DISALLOWED_COMMANDS
-
-# Allow 'createsuperuser' but keep everything else blocked
-DJANGOCOMMAND_DISALLOWED_COMMANDS = tuple(
-    cmd for cmd in DEFAULT_DISALLOWED_COMMANDS
-    if cmd != 'createsuperuser'
-)
-```
-
-To remove multiple commands:
-
-```python
-from djangocommand import DEFAULT_DISALLOWED_COMMANDS
-
-ALLOW_THESE = {'createsuperuser', 'makemigrations'}
-
-DJANGOCOMMAND_DISALLOWED_COMMANDS = tuple(
-    cmd for cmd in DEFAULT_DISALLOWED_COMMANDS
-    if cmd not in ALLOW_THESE
-)
-```
-
-### Using an Allowlist Instead
-
-For maximum security, use an allowlist. When set, **only** these commands can run (the blocklist is ignored):
+For maximum control, define your own allowlist from scratch:
 
 ```python
 # Only these 3 commands can be executed remotely
@@ -135,22 +112,66 @@ DJANGOCOMMAND_ALLOWED_COMMANDS = (
 )
 ```
 
-### Replacing the Blocklist Entirely
+### Removing Commands from the Default Allowlist
 
-If you need full control, define your own blocklist from scratch:
+Use list comprehension to remove specific commands:
 
 ```python
-# Your custom blocklist (won't receive updates from new client versions)
-DJANGOCOMMAND_DISALLOWED_COMMANDS = (
-    'flush',
-    'shell',
-    'runserver',
+from djangocommand import DEFAULT_ALLOWED_COMMANDS
+
+# Remove 'loaddata' from the allowlist
+DJANGOCOMMAND_ALLOWED_COMMANDS = tuple(
+    cmd for cmd in DEFAULT_ALLOWED_COMMANDS
+    if cmd != 'loaddata'
 )
 ```
 
-> **Note:** This approach won't automatically include new dangerous commands that may be added to `DEFAULT_DISALLOWED_COMMANDS` in future versions. Prefer extending the default list when possible.
+### Alternative: Blocklist Mode
 
-## Running the Agent
+If you prefer to allow all commands except dangerous ones (less secure but more permissive), enable blocklist mode:
+
+```python
+# Enable blocklist mode
+DJANGOCOMMAND_USE_BLOCKLIST = True
+```
+
+In blocklist mode, the default blocklist includes:
+
+| Category | Commands |
+|----------|----------|
+| Database destruction | `flush`, `sqlflush`, `reset_db` |
+| Interactive shells | `shell`, `shell_plus`, `dbshell` |
+| Development servers | `runserver`, `runserver_plus`, `testserver` |
+| Security sensitive | `createsuperuser`, `changepassword` |
+| File modifications | `makemigrations`, `squashmigrations` |
+| Other dangerous | `drop_test_database`, `delete_squashed_migrations`, `clean_pyc` |
+
+You can extend the blocklist:
+
+```python
+DJANGOCOMMAND_USE_BLOCKLIST = True
+
+from djangocommand import DEFAULT_DISALLOWED_COMMANDS
+
+DJANGOCOMMAND_DISALLOWED_COMMANDS = DEFAULT_DISALLOWED_COMMANDS + (
+    'my_dangerous_command',
+)
+```
+
+Or allow a blocked command by removing it:
+
+```python
+DJANGOCOMMAND_USE_BLOCKLIST = True
+
+from djangocommand import DEFAULT_DISALLOWED_COMMANDS
+
+DJANGOCOMMAND_DISALLOWED_COMMANDS = tuple(
+    cmd for cmd in DEFAULT_DISALLOWED_COMMANDS
+    if cmd != 'createsuperuser'
+)
+```
+
+## Running the Runner
 
 ### Foreground (development)
 
@@ -183,33 +204,41 @@ CMD ["python", "manage.py", "djangocommand", "start"]
 You can also use the client programmatically:
 
 ```python
-from djangocommand import Agent
+from djangocommand import Runner
 
-# Create agent from Django settings
-agent = Agent.from_settings()
+# Create runner from Django settings
+runner = Runner.from_settings()
 
-# Run the agent (blocks until stopped)
-agent.run()
+# Run the runner (blocks until stopped)
+runner.run()
 
 # Or just run a single heartbeat cycle
-agent.run_once()
+runner.run_once()
 ```
 
 ### Checking Command Permissions
 
 ```python
-from djangocommand import is_command_allowed, DEFAULT_DISALLOWED_COMMANDS
+from djangocommand import (
+    is_command_allowed,
+    is_using_blocklist,
+    get_allowed_commands,
+    get_disallowed_commands,
+    DEFAULT_ALLOWED_COMMANDS,
+)
 
 # Check if a command is allowed
-allowed, reason = is_command_allowed('flush')
-# (False, 'in DJANGOCOMMAND_DISALLOWED_COMMANDS blocklist')
-
 allowed, reason = is_command_allowed('migrate')
 # (True, '')
 
-# Get the current blocklist
-from djangocommand import get_disallowed_commands
-blocked = get_disallowed_commands()  # frozenset of command names
+allowed, reason = is_command_allowed('shell')
+# (False, 'not in DJANGOCOMMAND_ALLOWED_COMMANDS allowlist')
+
+# Check which mode is active
+if is_using_blocklist():
+    blocked = get_disallowed_commands()  # frozenset of command names
+else:
+    allowed = get_allowed_commands()  # frozenset of command names
 ```
 
 ## License

@@ -2,11 +2,17 @@
 Security utilities for DjangoCommand client.
 
 Handles command allowlisting/blocklisting based on Django settings.
+
+Security Model:
+- DEFAULT: Allowlist approach (most secure) - only commands in
+  DJANGOCOMMAND_ALLOWED_COMMANDS can run
+- OPTIONAL: Blocklist approach - set DJANGOCOMMAND_USE_BLOCKLIST = True
+  to allow all commands except those in DJANGOCOMMAND_DISALLOWED_COMMANDS
 """
 
 import logging
 
-from .constants import DEFAULT_DISALLOWED_COMMANDS
+from .constants import DEFAULT_ALLOWED_COMMANDS, DEFAULT_DISALLOWED_COMMANDS
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +26,45 @@ class CommandDisallowedError(Exception):
         super().__init__(f"Command '{command}' is not allowed: {reason}")
 
 
+def is_using_blocklist() -> bool:
+    """
+    Check if the blocklist approach is enabled.
+
+    Returns True if DJANGOCOMMAND_USE_BLOCKLIST = True in settings.
+    """
+    from django.conf import settings
+    return getattr(settings, 'DJANGOCOMMAND_USE_BLOCKLIST', False)
+
+
+def get_allowed_commands() -> frozenset[str]:
+    """
+    Get the set of allowed commands from Django settings.
+
+    Returns DJANGOCOMMAND_ALLOWED_COMMANDS if set, otherwise
+    DEFAULT_ALLOWED_COMMANDS.
+
+    Note: This returns the allowlist regardless of whether blocklist
+    mode is enabled. Use is_using_blocklist() to check the mode.
+    """
+    from django.conf import settings
+
+    allowed = getattr(
+        settings,
+        'DJANGOCOMMAND_ALLOWED_COMMANDS',
+        DEFAULT_ALLOWED_COMMANDS
+    )
+    return frozenset(allowed)
+
+
 def get_disallowed_commands() -> frozenset[str]:
     """
     Get the set of disallowed commands from Django settings.
 
-    Returns DEFAULT_DISALLOWED_COMMANDS unless overridden by
-    DJANGOCOMMAND_DISALLOWED_COMMANDS in settings.
+    Returns DJANGOCOMMAND_DISALLOWED_COMMANDS if set, otherwise
+    DEFAULT_DISALLOWED_COMMANDS.
 
-    Note: If DJANGOCOMMAND_ALLOWED_COMMANDS is set, the blocklist is
-    ignored for execution purposes, but this function still returns
-    the blocklist for discovery filtering.
+    Note: This returns the blocklist regardless of whether blocklist
+    mode is enabled. Use is_using_blocklist() to check the mode.
     """
     from django.conf import settings
 
@@ -45,11 +80,11 @@ def is_command_allowed(command: str) -> tuple[bool, str]:
     """
     Check if a command is allowed to execute.
 
-    Reads from Django settings:
-    - DJANGOCOMMAND_ALLOWED_COMMANDS: If set (non-empty), ONLY these commands
-      are allowed. The blocklist is ignored.
-    - DJANGOCOMMAND_DISALLOWED_COMMANDS: Commands that cannot be executed.
-      Defaults to DEFAULT_DISALLOWED_COMMANDS.
+    Security Model:
+    - By default (allowlist mode): Only commands in DJANGOCOMMAND_ALLOWED_COMMANDS
+      (or DEFAULT_ALLOWED_COMMANDS) can run.
+    - If DJANGOCOMMAND_USE_BLOCKLIST = True: All commands can run EXCEPT those
+      in DJANGOCOMMAND_DISALLOWED_COMMANDS (or DEFAULT_DISALLOWED_COMMANDS).
 
     Args:
         command: The management command name to check
@@ -62,29 +97,35 @@ def is_command_allowed(command: str) -> tuple[bool, str]:
     # Lazy import to avoid Django settings access at module load time
     from django.conf import settings
 
-    # Check allowlist first (if set, it takes precedence)
-    allowed_commands = getattr(settings, 'DJANGOCOMMAND_ALLOWED_COMMANDS', None)
-    if allowed_commands:
-        # Convert to frozenset for O(1) lookup
+    # Check if using blocklist mode
+    use_blocklist = getattr(settings, 'DJANGOCOMMAND_USE_BLOCKLIST', False)
+
+    if use_blocklist:
+        # Blocklist mode: allow all except blocked commands
+        disallowed_commands = getattr(
+            settings,
+            'DJANGOCOMMAND_DISALLOWED_COMMANDS',
+            DEFAULT_DISALLOWED_COMMANDS
+        )
+        disallowed_set = frozenset(disallowed_commands)
+
+        if command in disallowed_set:
+            return False, "in DJANGOCOMMAND_DISALLOWED_COMMANDS blocklist"
+
+        return True, ""
+    else:
+        # Allowlist mode (default): only allow explicitly listed commands
+        allowed_commands = getattr(
+            settings,
+            'DJANGOCOMMAND_ALLOWED_COMMANDS',
+            DEFAULT_ALLOWED_COMMANDS
+        )
         allowed_set = frozenset(allowed_commands)
+
         if command in allowed_set:
             return True, ""
         else:
-            return False, f"not in DJANGOCOMMAND_ALLOWED_COMMANDS allowlist"
-
-    # Check blocklist
-    disallowed_commands = getattr(
-        settings,
-        'DJANGOCOMMAND_DISALLOWED_COMMANDS',
-        DEFAULT_DISALLOWED_COMMANDS
-    )
-    # Convert to frozenset for O(1) lookup
-    disallowed_set = frozenset(disallowed_commands)
-
-    if command in disallowed_set:
-        return False, "in DJANGOCOMMAND_DISALLOWED_COMMANDS blocklist"
-
-    return True, ""
+            return False, "not in DJANGOCOMMAND_ALLOWED_COMMANDS allowlist"
 
 
 def check_command_allowed(command: str) -> None:

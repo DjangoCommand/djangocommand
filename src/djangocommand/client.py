@@ -145,7 +145,7 @@ class DjangoCommandClient:
 
         Args:
             method: HTTP method (GET, POST, etc.)
-            endpoint: API endpoint (e.g., '/api/agent/heartbeat/')
+            endpoint: API endpoint (e.g., '/api/runner/heartbeat/')
             **kwargs: Additional arguments passed to requests
 
         Returns:
@@ -201,11 +201,11 @@ class DjangoCommandClient:
         """Make a POST request with JSON body."""
         return self._request('POST', endpoint, json=data, **kwargs)
 
-    # Convenience methods for agent API
+    # Convenience methods for runner API
 
     def heartbeat(
         self,
-        agent_version: str,
+        runner_version: str,
         python_version: str,
         django_version: str,
         commands_hash: str,
@@ -216,8 +216,8 @@ class DjangoCommandClient:
         Returns:
             dict with keys: ok, commands_in_sync, pending_executions
         """
-        return self.post('/api/agent/heartbeat/', {
-            'agent_version': agent_version,
+        return self.post('/api/runner/heartbeat/', {
+            'runner_version': runner_version,
             'python_version': python_version,
             'django_version': django_version,
             'commands_hash': commands_hash,
@@ -233,24 +233,24 @@ class DjangoCommandClient:
         Returns:
             dict with keys: ok, synced_count, commands_hash
         """
-        return self.post('/api/agent/commands/sync/', {
+        return self.post('/api/runner/commands/sync/', {
             'commands': commands,
         })
 
     def get_pending_executions(self) -> list[dict]:
         """
-        Get pending executions for this agent.
+        Get pending executions for this runner.
 
         Returns:
             List of execution dicts
         """
-        response = self.get('/api/agent/pending/')
+        response = self.get('/api/runner/pending/')
         return response.get('executions', [])
 
     def start_execution(self, execution_id: str) -> dict:
         """Mark an execution as started."""
         _validate_execution_id(execution_id)
-        return self.post(f'/api/agent/executions/{execution_id}/start/')
+        return self.post(f'/api/runner/executions/{execution_id}/start/')
 
     def send_output(
         self,
@@ -270,7 +270,7 @@ class DjangoCommandClient:
             chunk_number: Sequence number for ordering and idempotency
         """
         _validate_execution_id(execution_id)
-        return self.post(f'/api/agent/executions/{execution_id}/output/', {
+        return self.post(f'/api/runner/executions/{execution_id}/output/', {
             'chunk_number': chunk_number,
             'segments': segments,
             'is_stderr': is_stderr,
@@ -291,7 +291,7 @@ class DjangoCommandClient:
             status: One of 'success', 'failed', 'cancelled'
         """
         _validate_execution_id(execution_id)
-        return self.post(f'/api/agent/executions/{execution_id}/complete/', {
+        return self.post(f'/api/runner/executions/{execution_id}/complete/', {
             'exit_code': exit_code,
             'status': status,
         })
@@ -304,4 +304,4 @@ class DjangoCommandClient:
             dict with keys: cancel_requested, force_kill
         """
         _validate_execution_id(execution_id)
-        return self.get(f'/api/agent/executions/{execution_id}/cancel-status/')
+        return self.get(f'/api/runner/executions/{execution_id}/cancel-status/')

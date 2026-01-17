@@ -24,8 +24,8 @@ DEFAULT_SERVER_URL = 'https://app.djangocommand.com'
 
 
 @dataclass
-class AgentConfig:
-    """Agent configuration container."""
+class RunnerConfig:
+    """Runner configuration container."""
 
     server_url: str
     api_key: str
@@ -69,9 +69,9 @@ class AgentConfig:
             )
 
 
-def load_config() -> AgentConfig:
+def load_config() -> RunnerConfig:
     """
-    Load agent configuration from Django settings.
+    Load runner configuration from Django settings.
 
     Required settings:
     - DJANGOCOMMAND_API_KEY: API key for authentication (dc_xxx format)
@@ -90,7 +90,7 @@ def load_config() -> AgentConfig:
     - DJANGOCOMMAND_DISALLOWED_COMMANDS: Commands that cannot execute
                                           (default: DEFAULT_DISALLOWED_COMMANDS)
     """
-    config = AgentConfig(
+    config = RunnerConfig(
         server_url=getattr(settings, 'DJANGOCOMMAND_SERVER_URL', DEFAULT_SERVER_URL),
         api_key=getattr(settings, 'DJANGOCOMMAND_API_KEY', ''),
         heartbeat_interval=getattr(settings, 'DJANGOCOMMAND_HEARTBEAT_INTERVAL', 30),

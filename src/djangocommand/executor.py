@@ -211,7 +211,7 @@ class CommandExecutor:
             execution_id=execution_id,
         )
 
-        # Build command using same Python interpreter as agent
+        # Build command using same Python interpreter as runner
         # Use -u flag for unbuffered output (instead of env var)
         manage_py = os.path.join(self.project_path, 'manage.py')
         cmd = [sys.executable, '-u', manage_py, command]
