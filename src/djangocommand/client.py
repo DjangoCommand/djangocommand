@@ -171,15 +171,24 @@ class DjangoCommandClient:
                 **kwargs
             )
 
-            # Handle authentication errors
-            if response.status_code == 401:
-                raise AuthenticationError('Invalid API key')
+            # Handle authentication/authorization errors (trigger backoff)
+            # 401: Invalid/missing credentials
+            # 403: Valid credentials but access denied (quota exceeded, suspended, etc.)
+            if response.status_code in (401, 403):
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get('detail', error_data.get('error', response.text))
+                except ValueError:
+                    error_msg = response.text
+                raise AuthenticationError(
+                    f'Access denied ({response.status_code}): {error_msg}'
+                )
 
             # Handle other errors
             if response.status_code >= 400:
                 try:
                     error_data = response.json()
-                    error_msg = error_data.get('error', response.text)
+                    error_msg = error_data.get('detail', error_data.get('error', response.text))
                 except ValueError:
                     error_msg = response.text
                 raise DjangoCommandClientError(

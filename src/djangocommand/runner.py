@@ -9,7 +9,6 @@ import logging
 import os
 import platform
 import signal
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -17,10 +16,10 @@ from typing import Optional
 
 import django
 
-from .client import DjangoCommandClient, DjangoCommandClientError
+from .client import AuthenticationError, DjangoCommandClient, DjangoCommandClientError
 from .config import RunnerConfig, load_config
 from .discovery import get_commands_with_hash
-from .executor import CommandExecutor, ExecutionResult
+from .executor import CommandExecutor
 from .security import (
     get_allowed_commands,
     get_disallowed_commands,
@@ -55,6 +54,11 @@ class Runner:
     MAX_CONCURRENT_EXECUTIONS = 4
     EXECUTION_POLL_INTERVAL = 2.0  # seconds
 
+    # Auth state constants
+    AUTH_UNKNOWN = 'AUTH_UNKNOWN'   # Startup, never validated
+    AUTH_VALID = 'AUTH_VALID'       # Validated, may do work
+    AUTH_BACKOFF = 'AUTH_BACKOFF'   # Failed, waiting to retry
+
     def __init__(self, config: RunnerConfig):
         self.config = config
         self.client = DjangoCommandClient(
@@ -79,6 +83,19 @@ class Runner:
         self._executor_pool: ThreadPoolExecutor | None = None
         self._active_executions: dict[str, CommandExecutor] = {}  # execution_id -> executor
         self._executions_lock = threading.Lock()
+
+        # Auth state machine
+        self._auth_state = self.AUTH_UNKNOWN
+        self._auth_failure_count = 0
+        self._auth_backoff_until = 0.0
+        self._last_auth_status_log = 0.0  # For periodic status logging
+        # Backoff schedule in seconds: 1s, 2s, 5s, 10s, 30s, 2min, 5min (cap)
+        self._AUTH_BACKOFF_SCHEDULE = [1, 2, 5, 10, 30, 120, 300]
+
+        # Runner suspension state (quota exceeded, plan limits, etc.)
+        # When suspended, we continue heartbeating but skip execution polling
+        self._runner_suspended = False
+        self._suspension_reason: str | None = None
 
         # Project path (for running commands)
         self._project_path = self._find_project_path()
@@ -145,7 +162,7 @@ class Runner:
                 f'Using allowlist mode: {len(allowed)} commands in allowlist'
             )
 
-    def sync_commands(self):
+    def sync_commands(self) -> bool:
         """Sync commands with server."""
         logger.info('Syncing commands with server...')
         try:
@@ -163,13 +180,73 @@ class Runner:
             logger.info(f'Synced {response.get("synced_count", 0)} commands')
             return True
 
+        except AuthenticationError as e:
+            self._auth_disable_and_backoff(e)
+            return False
         except DjangoCommandClientError as e:
             logger.error(f'Failed to sync commands: {e}')
             return False
 
+    # -------------------------------------------------------------------------
+    # Auth state machine helpers
+    # -------------------------------------------------------------------------
+
+    def _auth_is_valid(self) -> bool:
+        """Check if auth has been validated (may do non-heartbeat work)."""
+        return self._auth_state == self.AUTH_VALID
+
+    def _auth_mark_valid(self) -> None:
+        """Mark auth as validated, reset failure counters."""
+        if self._auth_state != self.AUTH_VALID:
+            logger.info('Authentication validated.')
+        self._auth_state = self.AUTH_VALID
+        self._auth_failure_count = 0
+        self._auth_backoff_until = 0.0
+
+    def _auth_disable_and_backoff(self, error: Exception) -> None:
+        """Disable auth and enter backoff state."""
+        was_valid = self._auth_state == self.AUTH_VALID
+        self._auth_state = self.AUTH_BACKOFF
+        self._handle_auth_failure(error)
+        if was_valid:
+            logger.warning(f'Authentication lost: {error}')
+
+    def _log_auth_status_if_due(self) -> None:
+        """Log auth status periodically (every 5 min) while not valid."""
+        if self._auth_is_valid():
+            return
+        now = time.time()
+        if now - self._last_auth_status_log >= 300:  # 5 minutes
+            next_attempt = max(0, self._auth_backoff_until - now)
+            logger.info(
+                f'Auth status: {self._auth_state}, '
+                f'failures: {self._auth_failure_count}, '
+                f'next attempt in {next_attempt:.0f}s'
+            )
+            self._last_auth_status_log = now
+
+    def _handle_auth_failure(self, error: Exception) -> None:
+        """Handle authentication failure with progressive backoff (internal)."""
+        self._auth_failure_count += 1
+
+        # Get backoff duration (cap at last value in schedule)
+        schedule = self._AUTH_BACKOFF_SCHEDULE
+        backoff_index = min(self._auth_failure_count - 1, len(schedule) - 1)
+        backoff_seconds = schedule[backoff_index]
+
+        self._auth_backoff_until = time.time() + backoff_seconds
+
+        # Only log on first failure (subsequent logged by periodic status)
+        if self._auth_failure_count == 1:
+            logger.warning(
+                f'Authentication failed: {error}. '
+                f'Retrying in {backoff_seconds}s. '
+                f'Check API key configuration.'
+            )
+
     def heartbeat(self) -> Optional[dict]:
         """
-        Send heartbeat to server.
+        Send heartbeat to server. This is the auth validation path.
 
         Returns:
             Response dict or None if failed
@@ -182,6 +259,27 @@ class Runner:
                 commands_hash=self._commands_hash,
             )
 
+            # Mark auth as valid on successful heartbeat
+            self._auth_mark_valid()
+
+            # Check runner suspension state
+            runner_state = response.get('runner_state', 'active')
+            new_suspended = (runner_state == 'suspended')
+            suspension_reason = response.get('suspension_reason')
+
+            if new_suspended and not self._runner_suspended:
+                # Newly suspended
+                logger.warning(
+                    f'Runner suspended by server: {suspension_reason or "unknown reason"}. '
+                    f'Execution polling paused.'
+                )
+            elif not new_suspended and self._runner_suspended:
+                # Suspension lifted
+                logger.info('Runner suspension lifted. Resuming normal operation.')
+
+            self._runner_suspended = new_suspended
+            self._suspension_reason = suspension_reason
+
             # Check if commands need syncing
             if not response.get('commands_in_sync', True):
                 logger.info('Commands out of sync, triggering sync...')
@@ -193,6 +291,9 @@ class Runner:
 
             return response
 
+        except AuthenticationError as e:
+            self._auth_disable_and_backoff(e)
+            return None
         except DjangoCommandClientError as e:
             logger.error(f'Heartbeat failed: {e}')
             return None
@@ -202,12 +303,21 @@ class Runner:
         Poll for pending executions and start executing them.
 
         Runs each execution in a thread pool for parallel execution.
+        Only operates when auth is valid.
         """
+        # Gate: only poll if auth is valid
+        if not self._auth_is_valid():
+            return
+
         try:
             # Get pending executions from server
             pending = self.client.get_pending_executions()
 
             for execution in pending:
+                # Re-check auth before each submission (may have changed)
+                if not self._auth_is_valid():
+                    break
+
                 execution_id = execution['id']
 
                 # Skip if already running
@@ -230,6 +340,8 @@ class Runner:
                     execution.get('timeout', 300),
                 )
 
+        except AuthenticationError as e:
+            self._auth_disable_and_backoff(e)
         except DjangoCommandClientError as e:
             logger.error(f'Failed to poll executions: {e}')
 
@@ -258,6 +370,8 @@ class Runner:
         executor = CommandExecutor(
             project_path=self._project_path,
             client=self.client,
+            auth_check=self._auth_is_valid,
+            on_auth_error=self._auth_disable_and_backoff,
         )
 
         # Track active execution
@@ -294,18 +408,28 @@ class Runner:
             cancel_thread.join(timeout=2.0)
 
             # Report completion to server
-            try:
-                self.client.complete_execution(
-                    execution_id=execution_id,
-                    exit_code=result.exit_code,
-                    status=result.status,
+            if not self._auth_is_valid():
+                logger.warning(
+                    f'Cannot report completion for {execution_id}: auth not valid'
                 )
-                logger.info(
-                    f'Execution {execution_id} completed: {result.status} '
-                    f'(exit code: {result.exit_code})'
-                )
-            except DjangoCommandClientError as e:
-                logger.error(f'Failed to complete execution {execution_id}: {e}')
+            else:
+                try:
+                    self.client.complete_execution(
+                        execution_id=execution_id,
+                        exit_code=result.exit_code,
+                        status=result.status,
+                    )
+                    logger.info(
+                        f'Execution {execution_id} completed: {result.status} '
+                        f'(exit code: {result.exit_code})'
+                    )
+                except AuthenticationError as e:
+                    self._auth_disable_and_backoff(e)
+                    logger.warning(
+                        f'Completion report failed for {execution_id}: auth revoked'
+                    )
+                except DjangoCommandClientError as e:
+                    logger.error(f'Failed to complete execution {execution_id}: {e}')
 
         finally:
             # Remove from active executions
@@ -375,6 +499,11 @@ class Runner:
     ):
         """Poll server for cancellation requests."""
         while not stop_event.is_set():
+            # Skip API call if auth not valid
+            if not self._auth_is_valid():
+                stop_event.wait(timeout=2.0)
+                continue
+
             try:
                 status = self.client.check_cancel_status(execution_id)
                 if status.get('cancel_requested'):
@@ -385,6 +514,9 @@ class Runner:
                     )
                     executor.cancel(force=force)
                     break
+            except AuthenticationError as e:
+                self._auth_disable_and_backoff(e)
+                # Don't break, just stop making requests until auth recovers
             except DjangoCommandClientError:
                 pass  # Ignore errors, keep polling
 
@@ -428,12 +560,12 @@ class Runner:
             f'  Django: {self._django_version}'
         )
 
-        # Initial command discovery
+        # Initial command discovery (local, no network)
         self.discover_commands()
 
-        # Initial sync (always sync on startup)
-        if not self.sync_commands():
-            logger.error('Initial command sync failed. Continuing anyway...')
+        # Initial heartbeat to validate auth
+        # (sync will be triggered by heartbeat if commands_in_sync is false)
+        self.heartbeat()
 
         # Start executor thread pool
         self._executor_pool = ThreadPoolExecutor(
@@ -451,7 +583,15 @@ class Runner:
             while self._running:
                 now = time.time()
 
-                # Heartbeat check
+                # Periodic auth status log while not valid
+                self._log_auth_status_if_due()
+
+                # Skip if in auth backoff period
+                if self._auth_backoff_until > now:
+                    time.sleep(0.5)
+                    continue
+
+                # Heartbeat check (always allowed, validates auth)
                 if now - last_heartbeat >= self.config.heartbeat_interval:
                     response = self.heartbeat()
                     last_heartbeat = now
@@ -466,10 +606,11 @@ class Runner:
                                 f'Check server connectivity and API key.'
                             )
 
-                # Execution polling
-                if now - last_execution_poll >= self.EXECUTION_POLL_INTERVAL:
-                    self.poll_and_execute()
-                    last_execution_poll = now
+                # Execution polling (only if auth is valid and not suspended)
+                if self._auth_is_valid() and not self._runner_suspended:
+                    if now - last_execution_poll >= self.EXECUTION_POLL_INTERVAL:
+                        self.poll_and_execute()
+                        last_execution_poll = now
 
                 # Sleep a bit before next iteration
                 time.sleep(0.5)

@@ -15,10 +15,12 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from .client import DjangoCommandClient
+
+from .client import AuthenticationError
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +106,9 @@ class OutputStreamManager:
         self,
         client: "DjangoCommandClient",
         execution_id: str,
-        flush_interval: float = 1.5
+        flush_interval: float = 1.5,
+        auth_check: Callable[[], bool] | None = None,
+        on_auth_error: Callable[[Exception], None] | None = None,
     ):
         self.client = client
         self.execution_id = execution_id
@@ -115,6 +119,8 @@ class OutputStreamManager:
         self.running = True
         self._flush_thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._auth_check = auth_check
+        self._on_auth_error = on_auth_error
 
     def append(self, content: str, is_stderr: bool):
         """Route content to appropriate buffer."""
@@ -136,24 +142,48 @@ class OutputStreamManager:
 
     def _flush(self):
         """Flush both buffers, send as separate chunks."""
-        for buffer in [self.stdout_buffer, self.stderr_buffer]:
-            segments = buffer.flush()
-            if segments:
-                with self._lock:
-                    self.chunk_number += 1
-                    chunk_num = self.chunk_number
+        # Always drain buffers to free memory
+        stdout_segments = self.stdout_buffer.flush()
+        stderr_segments = self.stderr_buffer.flush()
 
-                try:
-                    self.client.send_output(
-                        self.execution_id,
-                        segments,
-                        buffer.is_stderr,
-                        chunk_num
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to send output chunk {chunk_num}: {e}"
-                    )
+        # Skip network call if auth not valid
+        if self._auth_check and not self._auth_check():
+            return  # Discard segments, no network call
+
+        # Send stdout
+        if stdout_segments:
+            if not self._send_chunk(stdout_segments, is_stderr=False):
+                return  # Auth error, don't try stderr either
+
+        # Send stderr
+        if stderr_segments:
+            self._send_chunk(stderr_segments, is_stderr=True)
+
+    def _send_chunk(self, segments: list[dict], is_stderr: bool) -> bool:
+        """
+        Send a single chunk to the server.
+
+        Returns True on success, False if auth error (caller should stop).
+        """
+        with self._lock:
+            self.chunk_number += 1
+            chunk_num = self.chunk_number
+
+        try:
+            self.client.send_output(
+                self.execution_id,
+                segments,
+                is_stderr,
+                chunk_num
+            )
+            return True
+        except AuthenticationError as e:
+            if self._on_auth_error:
+                self._on_auth_error(e)
+            return False
+        except Exception as e:
+            logger.warning(f"Failed to send output chunk {chunk_num}: {e}")
+            return True  # Continue trying for non-auth errors
 
     def finalize(self):
         """Final flush and stop flush loop."""
@@ -177,12 +207,16 @@ class CommandExecutor:
         self,
         project_path: str,
         client: "DjangoCommandClient",
+        auth_check: Callable[[], bool] | None = None,
+        on_auth_error: Callable[[Exception], None] | None = None,
     ):
         self.project_path = project_path
         self.client = client
         self.process: subprocess.Popen | None = None
         self.cancelled = False
         self._cancel_lock = threading.Lock()
+        self._auth_check = auth_check
+        self._on_auth_error = on_auth_error
 
     def execute(
         self,
@@ -209,6 +243,8 @@ class CommandExecutor:
         stream_manager = OutputStreamManager(
             client=self.client,
             execution_id=execution_id,
+            auth_check=self._auth_check,
+            on_auth_error=self._on_auth_error,
         )
 
         # Build command using same Python interpreter as runner
