@@ -338,6 +338,7 @@ class Runner:
                     execution['command'],
                     execution.get('args', ''),
                     execution.get('timeout', 300),
+                    execution.get('use_metadata_only_mode', False),
                 )
 
         except AuthenticationError as e:
@@ -351,6 +352,7 @@ class Runner:
         command: str,
         args: str,
         timeout: int,
+        use_metadata_only_mode: bool = False,
     ):
         """
         Run a single execution (called from thread pool).
@@ -366,6 +368,13 @@ class Runner:
             )
             self._reject_execution(execution_id, command, reason)
             return
+
+        # Determine if metadata-only mode should be used
+        # Either server flag or client setting triggers metadata-only mode
+        metadata_only = (
+            use_metadata_only_mode or
+            command in self.config.metadataonly_commands
+        )
 
         executor = CommandExecutor(
             project_path=self._project_path,
@@ -386,6 +395,10 @@ class Runner:
                 logger.error(f'Failed to start execution {execution_id}: {e}')
                 return
 
+            # If metadata-only mode, send simulated output before execution
+            if metadata_only:
+                self._send_metadata_only_output(execution_id)
+
             # Start cancel status polling
             cancel_event = threading.Event()
             cancel_thread = threading.Thread(
@@ -401,6 +414,7 @@ class Runner:
                 command=command,
                 args=args,
                 timeout=timeout,
+                metadata_only=metadata_only,
             )
 
             # Stop cancel polling
@@ -435,6 +449,28 @@ class Runner:
             # Remove from active executions
             with self._executions_lock:
                 self._active_executions.pop(execution_id, None)
+
+    def _send_metadata_only_output(self, execution_id: str):
+        """Send simulated output chunks for metadata-only mode."""
+        simulated_message = "(metadata-only mode, no output captured)\n"
+
+        try:
+            # Send stdout simulated chunk
+            self.client.send_output(
+                execution_id=execution_id,
+                segments=[{'timestamp': time.time(), 'content': simulated_message}],
+                is_stderr=False,
+                chunk_number=1,
+            )
+            # Send stderr simulated chunk
+            self.client.send_output(
+                execution_id=execution_id,
+                segments=[{'timestamp': time.time(), 'content': simulated_message}],
+                is_stderr=True,
+                chunk_number=2,
+            )
+        except DjangoCommandClientError as e:
+            logger.warning(f'Failed to send metadata-only output for {execution_id}: {e}')
 
     def _reject_execution(self, execution_id: str, command: str, reason: str):
         """

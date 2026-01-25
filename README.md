@@ -149,6 +149,27 @@ DJANGOCOMMAND_ALLOW_HTTP_HOSTS = ['localhost', '127.0.0.1', '::1']
 ```
 
 
+### Metadata-Only Mode
+
+For commands that produce sensitive output (credentials, PII) or very high-volume output, you can enable metadata-only mode. In this mode, the command executes normally but stdout/stderr are not captured or stored.
+
+```python
+# Commands that always run in metadata-only mode
+DJANGOCOMMAND_METADATAONLY_COMMANDS = (
+    "generate_api_keys",
+    "export_user_data",
+    "sync_large_dataset",
+)
+```
+
+Additionally, the dashboard can also enable metadata-only mode on a per-command basis via the command configuration settings. Either the client setting or the dashboard setting will trigger metadata-only mode.
+
+In metadata-only mode:
+- The command executes normally
+- Exit code and duration are still tracked
+- Output shows: "(metadata-only mode, no output captured)"
+
+
 ## Running the Runner
 
 Current architecture supports only 1 runner per project.

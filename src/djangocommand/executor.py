@@ -224,6 +224,7 @@ class CommandExecutor:
         command: str,
         args: str,
         timeout: int,
+        metadata_only: bool = False,
     ) -> ExecutionResult:
         """
         Run a Django management command via subprocess.
@@ -233,19 +234,12 @@ class CommandExecutor:
             command: Django management command name
             args: Command arguments as string
             timeout: Maximum execution time in seconds
+            metadata_only: If True, do not capture stdout/stderr (send simulated output instead)
 
         Returns:
             ExecutionResult with exit_code and status
         """
         self.cancelled = False
-
-        # Set up output streaming
-        stream_manager = OutputStreamManager(
-            client=self.client,
-            execution_id=execution_id,
-            auth_check=self._auth_check,
-            on_auth_error=self._on_auth_error,
-        )
 
         # Build command using same Python interpreter as runner
         # Use -u flag for unbuffered output (instead of env var)
@@ -257,8 +251,77 @@ class CommandExecutor:
             cmd.extend(shlex.split(args))
 
         logger.info(f"Executing: {' '.join(cmd)}")
+        if metadata_only:
+            logger.info("Running in metadata-only mode (no output capture)")
         logger.debug(f"Working directory: {self.project_path}")
         logger.debug(f"DJANGO_SETTINGS_MODULE: {os.environ.get('DJANGO_SETTINGS_MODULE', 'not set')}")
+
+        if metadata_only:
+            return self._execute_metadata_only(cmd, timeout)
+        else:
+            return self._execute_with_streaming(execution_id, cmd, timeout)
+
+    def _execute_metadata_only(
+        self,
+        cmd: list[str],
+        timeout: int,
+    ) -> ExecutionResult:
+        """
+        Execute command without capturing output.
+
+        In metadata-only mode, stdout/stderr go to /dev/null.
+        Only exit code and timing are captured.
+        """
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=self.project_path,
+            )
+
+            # Wait for process with timeout
+            try:
+                exit_code = self.process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Command timed out after {timeout}s")
+                self._kill_process()
+                return ExecutionResult(exit_code=-1, status='timed_out')
+
+            # Check if cancelled
+            with self._cancel_lock:
+                if self.cancelled:
+                    return ExecutionResult(exit_code=exit_code, status='cancelled')
+
+            # Determine status
+            status = 'success' if exit_code == 0 else 'failed'
+            return ExecutionResult(exit_code=exit_code, status=status)
+
+        except Exception as e:
+            logger.exception(f"Execution failed: {e}")
+            return ExecutionResult(exit_code=-1, status='failed')
+
+        finally:
+            self.process = None
+
+    def _execute_with_streaming(
+        self,
+        execution_id: str,
+        cmd: list[str],
+        timeout: int,
+    ) -> ExecutionResult:
+        """
+        Execute command with output streaming.
+
+        Standard execution mode with real-time output capture and streaming.
+        """
+        # Set up output streaming
+        stream_manager = OutputStreamManager(
+            client=self.client,
+            execution_id=execution_id,
+            auth_check=self._auth_check,
+            on_auth_error=self._on_auth_error,
+        )
 
         try:
             # Don't pass env= explicitly - let subprocess inherit parent's

@@ -33,6 +33,7 @@ class RunnerConfig:
     request_timeout: int = 30
     max_retries: int = 3
     allow_http_hosts: List[str] = field(default_factory=lambda: DEFAULT_ALLOW_HTTP_HOSTS.copy())
+    metadataonly_commands: tuple[str, ...] = field(default_factory=tuple)
 
     def validate(self):
         """Validate configuration and raise ConfigurationError if invalid."""
@@ -83,6 +84,9 @@ def load_config() -> RunnerConfig:
     - DJANGOCOMMAND_MAX_RETRIES: Max retries for failed requests (default: 3)
     - DJANGOCOMMAND_ALLOW_HTTP_HOSTS: List of hosts allowed to use HTTP
                                        (default: ['localhost', '127.0.0.1', '::1'])
+    - DJANGOCOMMAND_METADATAONLY_COMMANDS: Tuple of command names that run in
+                                            metadata-only mode (no output capture)
+                                            (default: ())
 
     Security settings (see djangocommand.security):
     - DJANGOCOMMAND_ALLOWED_COMMANDS: If set, ONLY these commands can execute
@@ -90,6 +94,15 @@ def load_config() -> RunnerConfig:
     - DJANGOCOMMAND_DISALLOWED_COMMANDS: Commands that cannot execute
                                           (default: DEFAULT_DISALLOWED_COMMANDS)
     """
+    # Validate metadataonly_commands before converting to tuple
+    # (a string would be silently converted to tuple of characters)
+    raw_metadataonly = getattr(settings, 'DJANGOCOMMAND_METADATAONLY_COMMANDS', ())
+    if isinstance(raw_metadataonly, str):
+        raise ConfigurationError(
+            'DJANGOCOMMAND_METADATAONLY_COMMANDS must be a tuple or list, not a string. '
+            'Use ("command_name",) with a trailing comma for single items.'
+        )
+
     config = RunnerConfig(
         server_url=getattr(settings, 'DJANGOCOMMAND_SERVER_URL', DEFAULT_SERVER_URL),
         api_key=getattr(settings, 'DJANGOCOMMAND_API_KEY', ''),
@@ -101,6 +114,7 @@ def load_config() -> RunnerConfig:
             'DJANGOCOMMAND_ALLOW_HTTP_HOSTS',
             DEFAULT_ALLOW_HTTP_HOSTS
         )),
+        metadataonly_commands=tuple(raw_metadataonly),
     )
 
     config.validate()
