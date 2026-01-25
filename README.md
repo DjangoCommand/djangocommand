@@ -5,7 +5,7 @@ Python client for [DjangoCommand](https://djangocommand.com) - run, schedule, an
 ## Installation
 
 ```bash
-pip install djangocommand
+pip install djangocommand-runner
 ```
 
 ## Quick Start

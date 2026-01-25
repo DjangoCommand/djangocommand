@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "djangocommand"
+name = "djangocommand-runner"
 version = "0.1.0"
 description = "Run, schedule, and audit Django management commands without SSH access"
 readme = "README.md"
@@ -40,8 +40,11 @@ dev = [
     "responses>=0.23",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/djangocommand"]
+
 [project.urls]
 Homepage = "https://djangocommand.com"
 Documentation = "https://docs.djangocommand.com"
-Repository = "https://github.com/frnhr/djangocommand"
-Issues = "https://github.com/frnhr/djangocommand/issues"
+Repository = "https://github.com/djangocommand/djangocommand"
+Issues = "https://github.com/djangocommand/djangocommand/issues"
