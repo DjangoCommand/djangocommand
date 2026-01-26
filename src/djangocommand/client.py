@@ -205,6 +205,9 @@ class DjangoCommandClient:
         except requests.exceptions.ConnectionError as e:
             logger.debug(f'{method} {url} -> CONNECTION ERROR: {e}')
             raise DjangoCommandClientError(f'Connection failed to {url}: {e}')
+        except requests.exceptions.RetryError as e:
+            logger.debug(f'{method} {url} -> MAX RETRIES EXCEEDED: {e}')
+            raise DjangoCommandClientError(f'Max retries exceeded for {url}: {e}')
 
     def get(self, endpoint: str, **kwargs) -> dict:
         """Make a GET request."""

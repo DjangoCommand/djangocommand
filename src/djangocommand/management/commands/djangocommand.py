@@ -269,6 +269,9 @@ class Command(BaseCommand):
             runner.run()
         except KeyboardInterrupt:
             pass  # Already handled by signal handler
+        except Exception as exc:
+            self.stderr.write(self.style.ERROR(f"Runner error: {exc}"))
+            sys.exit(1)
 
         self.stdout.write(self.style.SUCCESS("Runner stopped"))
 

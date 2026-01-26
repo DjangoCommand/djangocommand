@@ -563,6 +563,53 @@ class Runner:
             # Wait before next poll
             stop_event.wait(timeout=2.0)
 
+    def _startup_connect(self) -> bool:
+        """
+        Attempt initial connection to server with exponential backoff.
+
+        Used during startup to handle cases where the backend isn't ready yet
+        (e.g., in Docker Compose when services start simultaneously).
+
+        Returns:
+            True if connection succeeded, False if all retries exhausted.
+        """
+        max_wait_seconds = 300  # 5 minutes total
+        initial_delay = 10
+        max_delay = 60
+        elapsed = 0
+        attempt = 0
+        delay = initial_delay
+
+        while elapsed < max_wait_seconds:
+            attempt += 1
+            logger.info(f'Startup connection attempt {attempt}...')
+
+            response = self.heartbeat()
+            if response is not None:
+                logger.info('Startup connection successful.')
+                return True
+
+            # Calculate next delay with exponential backoff, capped at max_delay
+            remaining = max_wait_seconds - elapsed
+            actual_delay = min(delay, max_delay, remaining)
+
+            if actual_delay <= 0:
+                break
+
+            logger.warning(
+                f'Startup connection failed. Retrying in {actual_delay}s '
+                f'({int(remaining)}s remaining)...'
+            )
+            time.sleep(actual_delay)
+            elapsed += actual_delay
+            delay *= 2  # Exponential backoff
+
+        logger.error(
+            f'Failed to connect to server after {max_wait_seconds}s. '
+            f'Check server URL and network connectivity.'
+        )
+        return False
+
     def _setup_signal_handlers(self):
         """Set up graceful shutdown handlers."""
         # Signal handlers can only be set from the main thread.
@@ -603,9 +650,11 @@ class Runner:
         # Initial command discovery (local, no network)
         self.discover_commands()
 
-        # Initial heartbeat to validate auth
-        # (sync will be triggered by heartbeat if commands_in_sync is false)
-        self.heartbeat()
+        # Initial connection with retry logic (handles backend not ready yet)
+        if not self._startup_connect():
+            logger.error('Startup connection failed. Exiting.')
+            self._running = False
+            return
 
         # Start executor thread pool
         self._executor_pool = ThreadPoolExecutor(
